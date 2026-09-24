@@ -15,23 +15,33 @@ const app = express();
 const PORT = Number(process.env.PORT) || 5000;
 const MONGODB_URI = process.env.MONGODB_URI;
 
+let mongoConnectionPromise = null;
+
 const connectToDatabase = async () => {
   if (!MONGODB_URI) {
     throw new Error('MONGODB_URI is required. Add your MongoDB Atlas connection string to backend/.env or Vercel environment variables.');
   }
 
   if (mongoose.connection.readyState === 1) {
-    return;
+    return mongoose.connection;
   }
 
-  await mongoose.connect(MONGODB_URI, {
-    dbName: 'nexora',
-    serverSelectionTimeoutMS: 10000,
-    socketTimeoutMS: 45000,
-    maxPoolSize: 10,
-  });
+  if (!mongoConnectionPromise) {
+    mongoConnectionPromise = mongoose.connect(MONGODB_URI, {
+      dbName: 'nexora',
+      serverSelectionTimeoutMS: 10000,
+      socketTimeoutMS: 45000,
+      maxPoolSize: 10,
+    }).then(() => {
+      console.log('MongoDB connected successfully');
+      return mongoose.connection;
+    }).catch((error) => {
+      mongoConnectionPromise = null;
+      throw error;
+    });
+  }
 
-  console.log('MongoDB connected successfully');
+  return mongoConnectionPromise;
 };
 
 const ensureDatabaseReady = async (req, res, next) => {
@@ -55,12 +65,21 @@ app.get('/', (req, res) => {
   res.json({ ok: true, message: 'Nexora backend is running' });
 });
 
-app.get('/api/health', (req, res) => {
-  res.json({
-    ok: true,
-    message: 'Nexora backend is running',
-    dbConnected: mongoose.connection.readyState === 1,
-  });
+app.get('/api/health', async (req, res) => {
+  try {
+    await connectToDatabase();
+    res.json({
+      ok: true,
+      message: 'Nexora backend is running',
+      dbConnected: mongoose.connection.readyState === 1,
+    });
+  } catch (error) {
+    res.status(503).json({
+      ok: false,
+      message: 'Database connection failed',
+      error: error.message,
+    });
+  }
 });
 
 app.get('/favicon.ico', (req, res) => {
