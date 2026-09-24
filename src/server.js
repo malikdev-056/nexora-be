@@ -26,12 +26,25 @@ const connectToDatabase = async () => {
 
   await mongoose.connect(MONGODB_URI, {
     dbName: 'nexora',
-    serverSelectionTimeoutMS: 5000,
+    serverSelectionTimeoutMS: 10000,
     socketTimeoutMS: 45000,
     maxPoolSize: 10,
   });
 
   console.log('MongoDB connected successfully');
+};
+
+const ensureDatabaseReady = async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    next();
+  } catch (error) {
+    console.error('Database readiness check failed:', error.message);
+    return res.status(503).json({
+      message: 'Database is unavailable. Please try again in a moment.',
+      error: error.message,
+    });
+  }
 };
 
 app.use(cors());
@@ -55,9 +68,9 @@ app.get('/favicon.ico', (req, res) => {
 });
 
 app.use('/api/auth', authRoutes);
-app.use('/api/batches', batchRoutes);
-app.use('/api/students', studentRoutes);
-app.use('/api/certificates', certificateRoutes);
+app.use('/api/batches', ensureDatabaseReady, batchRoutes);
+app.use('/api/students', ensureDatabaseReady, studentRoutes);
+app.use('/api/certificates', ensureDatabaseReady, certificateRoutes);
 
 const startServer = async () => {
   try {
