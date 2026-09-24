@@ -9,13 +9,15 @@ import certificateRoutes from './routes/certificateRoutes.js';
 
 dotenv.config();
 
+mongoose.set('bufferCommands', false);
+
 const app = express();
 const PORT = Number(process.env.PORT) || 5000;
 const MONGODB_URI = process.env.MONGODB_URI;
 
 const connectToDatabase = async () => {
   if (!MONGODB_URI) {
-    throw new Error('MONGODB_URI is required. Add your MongoDB Atlas connection string to backend/.env');
+    throw new Error('MONGODB_URI is required. Add your MongoDB Atlas connection string to backend/.env or Vercel environment variables.');
   }
 
   if (mongoose.connection.readyState === 1) {
@@ -24,6 +26,9 @@ const connectToDatabase = async () => {
 
   await mongoose.connect(MONGODB_URI, {
     dbName: 'nexora',
+    serverSelectionTimeoutMS: 5000,
+    socketTimeoutMS: 45000,
+    maxPoolSize: 10,
   });
 
   console.log('MongoDB connected successfully');
@@ -38,7 +43,11 @@ app.get('/', (req, res) => {
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true, message: 'Nexora backend is running' });
+  res.json({
+    ok: true,
+    message: 'Nexora backend is running',
+    dbConnected: mongoose.connection.readyState === 1,
+  });
 });
 
 app.get('/favicon.ico', (req, res) => {
