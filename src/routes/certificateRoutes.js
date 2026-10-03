@@ -33,6 +33,7 @@ const serializeCertificate = (certificate) => {
     batchId,
     studentCode: certificate.studentCode,
     fileUrl,
+    downloadUrl: `${fileUrl}?download=1`,
     uploadedAt: certificate.createdAt ? certificate.createdAt.toISOString() : new Date().toISOString(),
   };
 };
@@ -73,6 +74,24 @@ router.get('/download/:studentCode', async (req, res) => {
     return res.send(certificate.fileData);
   } catch (error) {
     return res.status(500).json({ message: 'Failed to download certificate', error: error.message });
+  }
+});
+
+router.get('/:batchId/:certificateId/download', async (req, res) => {
+  const { batchId, certificateId } = req.params;
+
+  try {
+    const certificate = await Certificate.findOne({ _id: certificateId, batch: batchId });
+    if (!certificate) {
+      return res.status(404).json({ message: 'Certificate not found' });
+    }
+
+    res.setHeader('Content-Type', certificate.mimeType || 'application/octet-stream');
+    const disposition = req.query.download === '1' ? 'attachment' : 'inline';
+    res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(certificate.fileName)}"`);
+    return res.send(certificate.fileData);
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to display certificate', error: error.message });
   }
 });
 
@@ -134,6 +153,43 @@ router.post('/:batchId/upload', upload.single('file'), async (req, res) => {
   }
 });
 
+router.put('/:batchId/:certificateId/upload', upload.single('file'), async (req, res) => {
+  const { batchId, certificateId } = req.params;
+
+  if (!req.file) {
+    return res.status(400).json({ message: 'Replacement certificate image is required' });
+  }
+
+  try {
+    const batch = await Batch.findById(batchId);
+    if (!batch) {
+      return res.status(404).json({ message: 'Batch not found' });
+    }
+
+    const certificate = await Certificate.findOne({ _id: certificateId, batch: batch._id });
+    if (!certificate) {
+      return res.status(404).json({ message: 'Certificate not found' });
+    }
+
+    const { studentId, studentName, studentCode } = req.body || {};
+    certificate.studentId = studentId || null;
+    certificate.studentName = studentName?.trim() || certificate.studentName;
+    certificate.studentCode = studentCode?.trim() || certificate.studentCode;
+    certificate.fileName = req.file.originalname;
+    certificate.mimeType = req.file.mimetype;
+    certificate.fileSize = req.file.size;
+    certificate.fileData = req.file.buffer;
+    await certificate.save();
+
+    return res.json({
+      message: 'Certificate updated',
+      certificate: serializeCertificate(certificate),
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to update certificate', error: error.message });
+  }
+});
+
 router.post('/:batchId', async (req, res) => {
   const { batchId } = req.params;
   const { studentId, studentName, fileName, fileUrl } = req.body || {};
@@ -165,23 +221,6 @@ router.post('/:batchId', async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ message: 'Failed to upload certificate', error: error.message });
-  }
-});
-
-router.get('/:batchId/:certificateId/download', async (req, res) => {
-  const { batchId, certificateId } = req.params;
-
-  try {
-    const certificate = await Certificate.findOne({ _id: certificateId, batch: batchId });
-    if (!certificate) {
-      return res.status(404).json({ message: 'Certificate not found' });
-    }
-
-    res.setHeader('Content-Type', certificate.mimeType || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(certificate.fileName)}"`);
-    return res.send(certificate.fileData);
-  } catch (error) {
-    return res.status(500).json({ message: 'Failed to download certificate', error: error.message });
   }
 });
 
