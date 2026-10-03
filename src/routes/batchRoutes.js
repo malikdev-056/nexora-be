@@ -61,6 +61,44 @@ router.post('/', async (req, res) => {
   }
 });
 
+router.put('/:batchId', async (req, res) => {
+  const { batchId } = req.params;
+  const { name, enrollmentDate } = req.body || {};
+
+  if (!name || !name.trim()) {
+    return res.status(400).json({ message: 'Batch name is required' });
+  }
+
+  const normalizedName = name.trim();
+
+  try {
+    const batch = await Batch.findById(batchId);
+    if (!batch) {
+      return res.status(404).json({ message: 'Batch not found' });
+    }
+
+    const escapedName = normalizedName.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
+    const duplicate = await Batch.findOne({
+      _id: { $ne: batch._id },
+      name: { $regex: `^${escapedName}$`, $options: 'i' },
+    });
+
+    if (duplicate) {
+      return res.status(400).json({ message: 'Batch already exists' });
+    }
+
+    batch.name = normalizedName;
+    if (enrollmentDate !== undefined) {
+      batch.enrollmentDate = enrollmentDate ? new Date(enrollmentDate) : null;
+    }
+    await batch.save();
+
+    return res.json({ message: 'Batch updated', batch: serializeBatch(batch) });
+  } catch (error) {
+    return res.status(400).json({ message: 'Failed to update batch', error: error.message });
+  }
+});
+
 router.get('/:batchId', async (req, res) => {
   const { batchId } = req.params;
 

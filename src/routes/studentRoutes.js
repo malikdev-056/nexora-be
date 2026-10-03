@@ -1,15 +1,55 @@
 import express from 'express';
 import Batch from '../models/Batch.js';
 import Student from '../models/Student.js';
+import StudentIdCounter from '../models/StudentIdCounter.js';
 import Certificate from '../models/Certificate.js';
 import { verifyToken } from '../utils/auth.js';
 
 const router = express.Router();
 
-const generateStudentId = (batchName, sequenceNumber) => {
+const getStudentIdPrefix = (batchName) => {
   const match = String(batchName || '').match(/\d+/);
-  const batchPrefix = match ? `b${match[0]}` : `b${String(batchName || '').toLowerCase().replace(/[^a-z]/g, '').slice(0, 3) || 'batch'}`;
-  return `${batchPrefix}std${String(sequenceNumber).padStart(3, '0')}`;
+  return match ? `b${match[0]}` : `b${String(batchName || '').toLowerCase().replace(/[^a-z]/g, '').slice(0, 3) || 'batch'}`;
+};
+
+const generateStudentId = (prefix, sequenceNumber) => `${prefix}std${String(sequenceNumber).padStart(3, '0')}`;
+
+const getNextStudentId = async (batchName) => {
+  const prefix = getStudentIdPrefix(batchName);
+  const counterExists = await StudentIdCounter.exists({ _id: prefix });
+
+  if (!counterExists) {
+    const idPattern = new RegExp(`^${prefix}std(\\d+)$`, 'i');
+    const existingIds = await Student.distinct('studentId', {
+      studentId: { $regex: `^${prefix}std\\d+$`, $options: 'i' },
+    });
+    const highestSequence = existingIds.reduce((highest, studentId) => {
+      const match = studentId.match(idPattern);
+      return match ? Math.max(highest, Number(match[1])) : highest;
+    }, 0);
+
+    try {
+      await StudentIdCounter.updateOne(
+        { _id: prefix },
+        { $setOnInsert: { sequence: highestSequence } },
+        { upsert: true }
+      );
+    } catch (error) {
+      if (error.code !== 11000) throw error;
+    }
+  }
+
+  const counter = await StudentIdCounter.findOneAndUpdate(
+    { _id: prefix },
+    { $inc: { sequence: 1 } },
+    { new: true }
+  );
+
+  if (!counter) {
+    throw new Error('Could not allocate a student ID');
+  }
+
+  return generateStudentId(prefix, counter.sequence);
 };
 
 const serializeStudent = (student) => ({
@@ -45,9 +85,14 @@ router.post('/:batchId', async (req, res) => {
     : [];
 
   const primaryCourse = (course || normalizedCourses[0] || '').trim();
+  const normalizedEmail = String(email || '').trim();
 
-  if (!name || !email || (!primaryCourse && normalizedCourses.length === 0)) {
-    return res.status(400).json({ message: 'Name, email and at least one course are required' });
+  if (!name || !name.trim() || (!primaryCourse && normalizedCourses.length === 0)) {
+    return res.status(400).json({ message: 'Name and at least one course are required' });
+  }
+
+  if (normalizedEmail && !/^\S+@\S+\.\S+$/.test(normalizedEmail)) {
+    return res.status(400).json({ message: 'Enter a valid email address' });
   }
 
   try {
@@ -56,14 +101,13 @@ router.post('/:batchId', async (req, res) => {
       return res.status(404).json({ message: 'Batch not found' });
     }
 
-    const existingStudentCount = await Student.countDocuments({ batch: batch._id });
-    const studentId = generateStudentId(batch.name, existingStudentCount + 1);
+    const studentId = await getNextStudentId(batch.name);
 
     const student = await Student.create({
       batch: batch._id,
       studentId,
       name: name.trim(),
-      email: email.trim(),
+      email: normalizedEmail,
       phone: phone ? phone.trim() : '',
       course: primaryCourse,
       courses: normalizedCourses.length > 0 ? normalizedCourses : (primaryCourse ? [primaryCourse] : []),
