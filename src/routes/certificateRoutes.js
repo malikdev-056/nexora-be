@@ -21,8 +21,19 @@ const upload = multer({
   },
 });
 
-const serializeCertificate = (certificate) => {
-  const baseUrl = process.env.APP_BASE_URL || `http://localhost:${process.env.PORT || 5000}`;
+const getAppBaseUrl = (req) => {
+  const configuredUrl = process.env.APP_BASE_URL?.replace(/\/$/, '');
+  if (configuredUrl) return configuredUrl;
+
+  const forwardedHost = req.get('x-forwarded-host');
+  const host = forwardedHost || req.get('host');
+  const forwardedProtocol = req.get('x-forwarded-proto')?.split(',')[0];
+  const protocol = forwardedProtocol || req.protocol;
+  return `${protocol}://${host}`;
+};
+
+const serializeCertificate = (certificate, req) => {
+  const baseUrl = getAppBaseUrl(req);
   const certificateId = certificate._id.toString();
   const batchId = certificate.batch.toString();
   const fileUrl = `${baseUrl}/api/certificates/${batchId}/${certificateId}/download`;
@@ -52,7 +63,7 @@ router.get('/lookup/:studentCode', async (req, res) => {
       studentCode: certificate.studentCode,
       studentName: certificate.studentName,
       fileName: certificate.fileName,
-      fileUrl: `${process.env.APP_BASE_URL || `http://localhost:${process.env.PORT || 5000}`}/api/certificates/download/${certificate.studentCode}`,
+      fileUrl: `${getAppBaseUrl(req)}/api/certificates/download/${encodeURIComponent(certificate.studentCode)}`,
       uploadedAt: certificate.createdAt ? certificate.createdAt.toISOString() : new Date().toISOString(),
     });
   } catch (error) {
@@ -107,7 +118,7 @@ router.get('/:batchId', async (req, res) => {
     }
 
     const certificates = await Certificate.find({ batch: batch._id }).sort({ createdAt: -1 });
-    return res.json({ certificates: certificates.map(serializeCertificate) });
+    return res.json({ certificates: certificates.map((certificate) => serializeCertificate(certificate, req)) });
   } catch (error) {
     return res.status(400).json({ message: 'Invalid batch id' });
   }
@@ -141,12 +152,12 @@ router.post('/:batchId/upload', upload.single('file'), async (req, res) => {
       mimeType: req.file.mimetype,
       fileSize: req.file.size,
       fileData: req.file.buffer,
-      fileUrl: `${process.env.APP_BASE_URL || `http://localhost:${process.env.PORT || 5000}`}/api/certificates/download/${studentCode || normalizedName}`,
+      fileUrl: `${getAppBaseUrl(req)}/api/certificates/download/${encodeURIComponent(studentCode || normalizedName)}`,
     });
 
     return res.status(201).json({
       message: 'Certificate uploaded',
-      certificate: serializeCertificate(certificate),
+      certificate: serializeCertificate(certificate, req),
     });
   } catch (error) {
     return res.status(500).json({ message: 'Failed to upload certificate', error: error.message });
@@ -183,7 +194,7 @@ router.put('/:batchId/:certificateId/upload', upload.single('file'), async (req,
 
     return res.json({
       message: 'Certificate updated',
-      certificate: serializeCertificate(certificate),
+      certificate: serializeCertificate(certificate, req),
     });
   } catch (error) {
     return res.status(500).json({ message: 'Failed to update certificate', error: error.message });
@@ -217,7 +228,7 @@ router.post('/:batchId', async (req, res) => {
 
     return res.status(201).json({
       message: 'Certificate uploaded',
-      certificate: serializeCertificate(certificate),
+      certificate: serializeCertificate(certificate, req),
     });
   } catch (error) {
     return res.status(500).json({ message: 'Failed to upload certificate', error: error.message });
