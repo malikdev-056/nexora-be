@@ -1,6 +1,7 @@
 import express from 'express';
 import multer from 'multer';
 import Batch from '../models/Batch.js';
+import Student from '../models/Student.js';
 import Certificate from '../models/Certificate.js';
 import { verifyToken } from '../utils/auth.js';
 
@@ -48,6 +49,19 @@ const serializeCertificate = (certificate, req) => {
     uploadedAt: certificate.createdAt ? certificate.createdAt.toISOString() : new Date().toISOString(),
   };
 };
+
+const findStudentCertificate = (student) => Certificate.findOne({
+  $or: [
+    { studentId: student._id },
+    { studentCode: { $regex: `^${student.studentId}$`, $options: 'i' } },
+  ],
+});
+
+const reserveCertificateSlot = (student) => Student.findOneAndUpdate(
+  { _id: student._id, certificateIssued: { $ne: true } },
+  { $set: { certificateIssued: true } },
+  { new: true }
+);
 
 router.get('/lookup/:studentCode', async (req, res) => {
   const { studentCode } = req.params;
@@ -132,8 +146,8 @@ router.post('/:batchId/upload', upload.single('file'), async (req, res) => {
     return res.status(400).json({ message: 'Certificate image is required' });
   }
 
-  if (!studentName || !studentName.trim()) {
-    return res.status(400).json({ message: 'Student name is required' });
+  if (!studentId || !studentCode || !studentName?.trim()) {
+    return res.status(400).json({ message: 'Student, student ID and student name are required' });
   }
 
   try {
@@ -142,18 +156,38 @@ router.post('/:batchId/upload', upload.single('file'), async (req, res) => {
       return res.status(404).json({ message: 'Batch not found' });
     }
 
-    const normalizedName = studentName.trim();
-    const certificate = await Certificate.create({
-      batch: batch._id,
-      studentId: studentId || null,
-      studentCode: studentCode || normalizedName,
-      studentName: normalizedName,
-      fileName: req.file.originalname,
-      mimeType: req.file.mimetype,
-      fileSize: req.file.size,
-      fileData: req.file.buffer,
-      fileUrl: `${getAppBaseUrl(req)}/api/certificates/download/${encodeURIComponent(studentCode || normalizedName)}`,
-    });
+    const student = await Student.findOne({ _id: studentId, batch: batch._id });
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found in this batch' });
+    }
+
+    if (await findStudentCertificate(student)) {
+      return res.status(409).json({ message: 'This student already has a certificate' });
+    }
+
+    const reservedStudent = await reserveCertificateSlot(student);
+    if (!reservedStudent) {
+      return res.status(409).json({ message: 'This student already has a certificate' });
+    }
+
+    let certificate;
+    try {
+      const normalizedName = student.name;
+      certificate = await Certificate.create({
+        batch: batch._id,
+        studentId: student._id,
+        studentCode: student.studentId,
+        studentName: normalizedName,
+        fileName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        fileSize: req.file.size,
+        fileData: req.file.buffer,
+        fileUrl: `${getAppBaseUrl(req)}/api/certificates/download/${encodeURIComponent(student.studentId)}`,
+      });
+    } catch (error) {
+      await Student.updateOne({ _id: student._id }, { $set: { certificateIssued: false } });
+      throw error;
+    }
 
     return res.status(201).json({
       message: 'Certificate uploaded',
@@ -203,7 +237,7 @@ router.put('/:batchId/:certificateId/upload', upload.single('file'), async (req,
 
 router.post('/:batchId', async (req, res) => {
   const { batchId } = req.params;
-  const { studentId, studentName, fileName, fileUrl } = req.body || {};
+  const { studentId, studentCode, studentName, fileName, fileUrl } = req.body || {};
 
   if (!studentName || !fileName || !fileUrl) {
     return res.status(400).json({ message: 'Student name, file name and file URL are required' });
@@ -215,10 +249,30 @@ router.post('/:batchId', async (req, res) => {
       return res.status(404).json({ message: 'Batch not found' });
     }
 
+    let student = null;
+    if (studentId || studentCode) {
+      student = studentId
+        ? await Student.findOne({ _id: studentId, batch: batch._id })
+        : await Student.findOne({
+            batch: batch._id,
+            studentId: { $regex: `^${studentCode.trim()}$`, $options: 'i' },
+          });
+      if (!student) {
+        return res.status(404).json({ message: 'Student not found in this batch' });
+      }
+      if (await findStudentCertificate(student)) {
+        return res.status(409).json({ message: 'This student already has a certificate' });
+      }
+      if (!await reserveCertificateSlot(student)) {
+        return res.status(409).json({ message: 'This student already has a certificate' });
+      }
+    }
+
     const certificate = await Certificate.create({
       batch: batch._id,
-      studentId: studentId || null,
-      studentName: studentName.trim(),
+      studentId: student?._id || null,
+      studentCode: student?.studentId || studentCode?.trim() || studentName.trim(),
+      studentName: student?.name || studentName.trim(),
       fileName: fileName.trim(),
       mimeType: 'application/octet-stream',
       fileSize: 0,
@@ -231,6 +285,9 @@ router.post('/:batchId', async (req, res) => {
       certificate: serializeCertificate(certificate, req),
     });
   } catch (error) {
+    if (req.body?.studentId) {
+      await Student.updateOne({ _id: req.body.studentId }, { $set: { certificateIssued: false } });
+    }
     return res.status(500).json({ message: 'Failed to upload certificate', error: error.message });
   }
 });
@@ -247,6 +304,17 @@ router.delete('/:batchId/:certificateId', async (req, res) => {
     const deletedCertificate = await Certificate.findOneAndDelete({ _id: certificateId, batch: batch._id });
     if (!deletedCertificate) {
       return res.status(404).json({ message: 'Certificate not found' });
+    }
+
+    const student = deletedCertificate.studentId
+      ? await Student.findById(deletedCertificate.studentId)
+      : await Student.findOne({ studentId: { $regex: `^${deletedCertificate.studentCode}$`, $options: 'i' } });
+    if (student) {
+      const remainingCertificate = await findStudentCertificate(student);
+      await Student.updateOne(
+        { _id: student._id },
+        { $set: { certificateIssued: Boolean(remainingCertificate) } }
+      );
     }
 
     return res.json({ message: 'Certificate deleted' });

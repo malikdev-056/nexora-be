@@ -164,7 +164,7 @@ router.delete('/:batchId/:studentId', async (req, res) => {
     await Certificate.deleteMany({
       $or: [
         { studentId: deletedStudent._id },
-        { studentCode: deletedStudent.studentId },
+        { studentCode: { $regex: `^${deletedStudent.studentId}$`, $options: 'i' } },
       ],
     });
 

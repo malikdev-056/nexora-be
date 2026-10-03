@@ -15,6 +15,10 @@ const studentSchema = new mongoose.Schema(
       trim: true,
       index: true,
     },
+    certificateIssued: {
+      type: Boolean,
+      default: false,
+    },
     name: {
       type: String,
       required: true,
